@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { config } from "./config";
 import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";
@@ -101,7 +102,11 @@ export class Trader {
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
-      const decision = await this.model.decide(this.buildState(block, book));
+      const state = this.buildState(block, book);
+      try {
+        appendFileSync("states.json", JSON.stringify({ ts: Date.now(), block, state }) + "\n");
+      } catch {}
+      const decision = await this.model.decide(state);
       const wanted: Side = decision.action === "sell" ? "sell" : "buy";
       const other: Side = wanted === "buy" ? "sell" : "buy";
       // The position cap (and, live, margin funds) can only pick the reducing side. The probabilities still show the model's call.
