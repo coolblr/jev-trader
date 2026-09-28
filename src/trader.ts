@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { config } from "./config";
 import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";

@@ -30,6 +30,9 @@ signal; they only make losing cheaper to discover.
    capture *even if the model had edge* - decision density, not model quality, is the
    binding constraint for micro-trading agents.
 
+**Addendum (Sep 23):** the obvious follow-up - predict volatility instead of direction -
+also failed, this time against a real baseline instead of a coin flip. See §13.
+
 ---
 
 ## 1. Why this experiment
@@ -177,11 +180,19 @@ py laya_v2_pipeline.py --states states.json --events events-run3.json
 
 # bars are printed and pre-registered in each script's docstring:
 # accuracy > 0.56 AND Brier < 0.24 on the time-ordered test split
+
+# §13 addendum: free re-analyses, then the funded v3 regression head
+py vol_step0_reanalysis.py --events events-run2.json
+py vol_baseline_clustering.py --events events-run2.json
+py laya_v3_pipeline.py --states states.json --events events-run3.json
+# bar: full-sample and thinned |Spearman rho| > 0.20 (step0/baseline);
+# v3's bar is margin over the trailing-RV baseline on its own test rows, >= +0.05
 ```
 
 Fork-specific files: `src/model-openrouter.ts`, the two-line logger in `src/trader.ts`,
-`laya_v1_pipeline.py`, `laya_v2_pipeline.py`. Raw data (states.json, events*.jsonl,
-~200 MB total) not committed; regenerate per §3.
+`laya_v1_pipeline.py`, `laya_v2_pipeline.py`, and (§13) `vol_step0_reanalysis.py`,
+`vol_baseline_clustering.py`, `laya_v3_pipeline.py`. Raw data (states.json,
+events*.jsonl, ~200 MB total) not committed; regenerate per §3.
 
 ## 11. What survived (reusable assets)
 
@@ -192,16 +203,118 @@ Fork-specific files: `src/model-openrouter.ts`, the two-line logger in `src/trad
 - A working local fine-tuning stack for typed-decision-style heads on consumer GPUs.
 - `OPENROUTER_DECISIONS_URL` shim point: a local model can replace the cloud API with
   zero changes to trading logic - the integration path if a future model passes the bars.
+- A reusable **re-score-before-you-retrain** pattern (§13.2-13.3): before funding a new
+  experiment, re-score data you've already paid for against the new hypothesis, and
+  measure the real baseline (here, volatility clustering) before judging any model
+  against it. Found two dead ends and one real effect for $0.
+- A purged time-ordered split helper (`laya_v3_pipeline.py`'s `purge_split`) for any
+  future target whose label window can overlap a train/val/test boundary.
 
 ## 12. Future work (pre-registered before trying)
 
-1. **Volatility, not direction** - predict |move| over 10–100 blocks. The
+1. ~~**Volatility, not direction** - predict |move| over 10–100 blocks. The
    stasis-detector effect suggests book state carries *size* information even though
-   it carries none on sign.
+   it carries none on sign.~~ **Tried, Sep 23 - also failed. See §13.**
 2. **More regimes** - weekday sessions, higher-volatility days; the cost is now zero
    (mock collection) plus one fine-tune run.
 3. **Horizon sweep** - 10 blocks (3 s) may behave differently from 100.
 4. **LoRA / full fine-tune** of the backbone if any of the above shows life.
+
+## 13. Addendum (Sep 23) - the volatility follow-up, and why it also failed
+
+§12's first future-work item was the obvious next move: direction on this book is
+unpredictable, but the stasis-detector effect in §5 (confident when the book is
+*still*, unconfident when it's *active*) suggested Jev's probabilities might carry
+*magnitude* information even with zero *sign* information. This addendum tests that,
+in three stages, at close to zero additional cost.
+
+### 13.1 Reframing the bar
+
+Volatility is not a coin-flip target the way direction was. Realized volatility
+clusters in time (a well-documented effect in every liquid market) - so the
+honest baseline isn't "beat a constant," it's **"beat trailing volatility as a
+forecast of forward volatility."** That baseline had to be measured before any
+model could be judged against it.
+
+Two label definitions were carried through: **net displacement** (`|mid[t+100] -
+mid[t]| / mid[t]`, directly comparable to §5's numbers) and **path volatility**
+(forward realized variance - sum of squared consecutive log returns over the
+window - which a round-trip window can register even when net displacement is
+~0). Pre-registered bar for every test below: **|Spearman rho| > 0.20**, checked
+on both the full overlapping-window sample and a thinned, ~independent-window
+subsample (overlapping 100-block horizons otherwise inflate significance without
+inflating true effect size).
+
+### 13.2 Step 0 - re-scoring Stage 1's decisions for free
+
+Stage 1's 63,214 Jev decisions (§5, $5.17 already spent) were re-scored against
+realized volatility instead of direction - zero new API calls.
+
+- **Confidence vs. net displacement:** full-sample rho = -0.021 (p=6.9e-9, i.e.
+  "significant" only because n=73,658), thinned (n=933, ~independent) rho =
+  -0.007, p=0.83. **FAIL.**
+- **Confidence vs. forward path volatility:** full-sample rho = -0.053, thinned
+  (n=750) rho = -0.039, p=0.29. **FAIL.**
+
+Both agree in direction and both collapse under thinning. The qualitative
+stasis-detector pattern in §5 is real but too small to build on - Jev's own
+confidence does not repurpose into a volatility signal, however volatility is
+defined.
+
+### 13.3 The baseline that matters: volatility clustering is real here
+
+Still using only already-logged mids (still $0): trailing 100-block realized
+variance against forward 100-block realized variance, same event stream as 13.2.
+
+- Full-sample: rho = +0.304 (n=94,112, p ≈ 0).
+- **Thinned, ~independent windows: rho = +0.354 (n=471, p=2.5e-15). PASS.**
+
+This is real, well-powered clustering, not an artifact of overlap. It becomes
+**H1‴**: any model - Jev asked a dedicated magnitude question, or a fine-tuned
+head - has to beat rho ≈ 0.35 out of sample to be worth anything. "Beat zero" was
+never the real bar; this is.
+
+### 13.4 v3 - fine-tuned regression head vs. the clustering baseline (Sep 23, compute-only)
+
+Same architecture and inputs as v2 (§7): ModernBERT-large, backbone frozen,
+full `TradeState` text, `states.json` joined to `events-run3.json` by block.
+New target: forward 100-block realized variance (path volatility) instead of
+direction. Split is time-ordered *and purged* - any row whose forward window
+would cross a train/val/test boundary is dropped, since overlapping horizons
+would otherwise leak return data across the split.
+
+- 53,491 states -> 52,864 labeled rows -> purged split 31,619 / 7,831 / 13,216
+  (198 boundary-crossing rows dropped).
+- **Test: model (full-state regression head) vs. forward RV: rho = +0.013
+  (p=0.15) - indistinguishable from no skill.**
+- **Baseline (trailing RV, same 13,216 test rows): rho = +0.226 (p=7.96e-153).**
+- **Margin (model - baseline) = -0.21. Bar was margin >= +0.05. FAIL,** by a wide
+  margin in the wrong direction.
+
+Given the entire order book - depth bands, imbalance, CVD flow, five price
+levels each side - the fine-tuned head extracted nothing beyond noise, while a
+single line of arithmetic already present inside its own input text
+(`returnsBps`) beats it by 0.21 rho. This rhymes with v1/v2 (§6-7): head-only
+fine-tuning on this hardware keeps failing to add anything a simpler feature
+doesn't already provide.
+
+### 13.5 Conclusions (addendum)
+
+1. **H1‴ rejected.** Neither reusing Jev's existing confidence nor fine-tuning
+   on the full order-book state beats trailing realized volatility as a
+   forecast of forward realized volatility, on this market, this session.
+2. **The project's only real predictive result, across every stage, is a
+   baseline, not a model:** trailing volatility predicting forward volatility
+   (rho 0.226-0.354 depending on session slice). Every model tested - a
+   frontier structured-decision API zero-shot, three fine-tuned encoder
+   variants across two targets - has now failed to beat either "predict the
+   base rate" or "predict what a one-line feature already predicts."
+3. **Cost: $0 additional API spend.** Both free re-analyses reused data already
+   paid for in §5; v3 is local GPU compute (RTX 2070, same box as v1/v2).
+4. **Not yet ruled out** (same caveat as §9): head-only vs. LoRA/full
+   fine-tune, this market/session only, this horizon only. Any of those could
+   still move the number - but the bar to clear is now rho ≈ 0.35, not zero,
+   which is the actual contribution of this addendum.
 
 ---
 

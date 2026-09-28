@@ -1,3 +1,4 @@
+import { OpenRouterJevModel } from "./model-openrouter";
 import { experimental_evaluate } from "ai";
 import { typeSafeAi } from "@ai-sdk/typesafe-ai";
 import { config } from "./config";
@@ -39,7 +40,7 @@ export interface Model {
   decide(state: TradeState): Promise<Decision>;
 }
 
-const QUESTIONS = {
+export const QUESTIONS = {
   direction: {
     type: "choice",
     instructions: {
@@ -104,4 +105,7 @@ export class MockModel implements Model {
   }
 }
 
-export const createModel = (): Model => (config.model === "jev" ? new JevModel() : new MockModel());
+export const createModel = (): Model =>
+  config.model === "jev" ? new JevModel()
+  : config.model === "jev-openrouter" ? new OpenRouterJevModel()
+  : new MockModel();

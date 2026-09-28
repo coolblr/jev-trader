@@ -1,3 +1,18 @@
 node_modules
 .env
 data/
+
+# raw experiment data and logs (~200MB) -- not committed per EXPERIMENT.md §10, regenerate per §3
+events*.json
+events*.jsonl
+states*.json
+stage*.log
+history-run1.json
+snapshot-final*.json
+body.json
+wherestategetscalled.txt
+__pycache__/
+laya-ft/
+laya-ft-v2/
+laya-ft-v3/
+jev-trader-fork/
